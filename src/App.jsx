@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 import VideoPlayer from './components/VideoPlayer';
@@ -7,7 +7,7 @@ import EPGModal from './components/EPGModal';
 import CustomPlaylistModal from './components/CustomPlaylistModal';
 import { getIndianChannels } from './services/iptvService';
 import { defaultChannels, CATEGORIES, LANGUAGES } from './data/defaultChannels';
-import { Tv, Flame, Heart, Clock, AlertCircle, RefreshCw } from 'lucide-react';
+import { Tv, Flame, Heart, Clock, AlertCircle, RefreshCw, X, Search } from 'lucide-react';
 
 const FAVORITES_STORAGE_KEY = 'stream_pulse_favorites_v1';
 const RECENT_STORAGE_KEY = 'stream_pulse_recent_v1';
@@ -29,6 +29,8 @@ export default function App() {
   const [isTheaterMode, setIsTheaterMode] = useState(false);
   const [epgTargetChannel, setEpgTargetChannel] = useState(null);
   const [isCustomM3UOpen, setIsCustomM3UOpen] = useState(false);
+
+  const channelGridRef = useRef(null);
 
   // Persistence: Favorites & Recent
   const [favorites, setFavorites] = useState(() => {
@@ -57,7 +59,6 @@ export default function App() {
         const data = await getIndianChannels();
         if (data && data.length > 0) {
           setChannels(data);
-          // Set initial channel
           const initial = data.find(c => c.isFeatured) || data[0];
           setSelectedChannel(initial);
         }
@@ -136,29 +137,35 @@ export default function App() {
 
   // Filter channels based on active tab, category, language, and search
   const filteredChannels = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
     return channels.filter(channel => {
+      // If user is searching, prioritize global search across all channels
+      if (query) {
+        const name = (channel.name || '').toLowerCase();
+        const category = (channel.category || '').toLowerCase();
+        const language = (channel.language || '').toLowerCase();
+        const desc = (channel.description || '').toLowerCase();
+
+        const terms = query.split(/\s+/).filter(Boolean);
+        return terms.every(term => 
+          name.includes(term) || category.includes(term) || language.includes(term) || desc.includes(term)
+        );
+      }
+
       // Tab filter
       if (activeTab === 'featured' && !channel.isFeatured) return false;
       if (activeTab === 'favorites' && !favorites.includes(channel.id)) return false;
       if (activeTab === 'recent' && !recentChannelIds.includes(channel.id)) return false;
 
-      // Category filter
-      if (selectedCategory !== 'All' && channel.category.toLowerCase() !== selectedCategory.toLowerCase()) {
+      // Category filter (safe null-check)
+      if (selectedCategory !== 'All' && (channel.category || '').toLowerCase() !== selectedCategory.toLowerCase()) {
         return false;
       }
 
-      // Language filter
-      if (selectedLanguage !== 'All' && channel.language.toLowerCase() !== selectedLanguage.toLowerCase()) {
+      // Language filter (safe null-check)
+      if (selectedLanguage !== 'All' && (channel.language || '').toLowerCase() !== selectedLanguage.toLowerCase()) {
         return false;
-      }
-
-      // Search term
-      if (searchTerm.trim()) {
-        const query = searchTerm.toLowerCase();
-        const matchName = channel.name.toLowerCase().includes(query);
-        const matchCat = channel.category?.toLowerCase().includes(query);
-        const matchLang = channel.language?.toLowerCase().includes(query);
-        if (!matchName && !matchCat && !matchLang) return false;
       }
 
       return true;
@@ -167,10 +174,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0B0E14] text-slate-100 flex flex-col">
-      {/* Top Navigation Bar */}
+      {/* Top Navigation Bar with Search */}
       <Navbar
         searchTerm={searchTerm}
         onSearchChange={setSearchTerm}
+        channels={channels}
+        onSelectChannel={handleSelectChannel}
         channelCount={channels.length}
         onOpenCustomM3U={() => setIsCustomM3UOpen(true)}
         onRefreshChannels={handleRefresh}
@@ -183,11 +192,20 @@ export default function App() {
         {/* Sidebar Drawer */}
         <Sidebar
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={(tab) => {
+            setActiveTab(tab);
+            setSearchTerm(''); // Clear search when user explicitly navigates tabs
+          }}
           selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
+          onSelectCategory={(cat) => {
+            setSelectedCategory(cat);
+            setSearchTerm('');
+          }}
           selectedLanguage={selectedLanguage}
-          onSelectLanguage={setSelectedLanguage}
+          onSelectLanguage={(lang) => {
+            setSelectedLanguage(lang);
+            setSearchTerm('');
+          }}
           favoritesCount={favorites.length}
           recentCount={recentChannelIds.length}
           isOpen={isSidebarOpen}
@@ -208,42 +226,62 @@ export default function App() {
             />
           </div>
 
-          {/* Channels Header & Category Chips Bar */}
-          <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          {/* Channels Header & Search Active Indicator */}
+          <div ref={channelGridRef} className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-xl font-extrabold text-white">
-                  {activeTab === 'all' && 'All Live Channels'}
-                  {activeTab === 'featured' && 'Featured & Trending'}
-                  {activeTab === 'favorites' && 'Your Favorite Channels'}
-                  {activeTab === 'recent' && 'Recently Watched'}
+                <h3 className="text-xl font-extrabold text-white flex items-center gap-2">
+                  {searchTerm.trim() ? (
+                    <>
+                      <Search className="w-5 h-5 text-sky-400" />
+                      <span>Results for &ldquo;{searchTerm}&rdquo;</span>
+                      <button
+                        onClick={() => setSearchTerm('')}
+                        className="ml-2 px-2 py-0.5 rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 text-xs font-normal flex items-center gap-1 transition-colors"
+                      >
+                        <X className="w-3 h-3" /> Clear
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {activeTab === 'all' && 'All Live Channels'}
+                      {activeTab === 'featured' && 'Featured & Trending'}
+                      {activeTab === 'favorites' && 'Your Favorite Channels'}
+                      {activeTab === 'recent' && 'Recently Watched'}
+                    </>
+                  )}
                 </h3>
                 <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-white/10 text-slate-300">
                   {filteredChannels.length}
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                {selectedCategory !== 'All' ? `Filtered by ${selectedCategory}` : 'Broadcasting 24/7 in High Definition'}
-                {selectedLanguage !== 'All' ? ` • ${selectedLanguage}` : ''}
+                {searchTerm.trim() 
+                  ? 'Searching live channels across names, categories, and languages' 
+                  : (selectedCategory !== 'All' ? `Filtered by ${selectedCategory}` : 'Broadcasting 24/7 in High Definition')
+                }
+                {!searchTerm.trim() && selectedLanguage !== 'All' ? ` • ${selectedLanguage}` : ''}
               </p>
             </div>
 
             {/* Quick Horizontal Category Filters */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
-              {CATEGORIES.slice(0, 6).map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 transition-all ${
-                    selectedCategory === cat
-                      ? 'bg-sky-500 text-slate-950 font-bold shadow-md shadow-sky-500/20'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/5'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
+            {!searchTerm.trim() && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
+                {CATEGORIES.slice(0, 6).map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setSelectedCategory(cat)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+                      selectedCategory === cat
+                        ? 'bg-sky-500 text-slate-950 font-bold shadow-md shadow-sky-500/20'
+                        : 'bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/5'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Channel Grid */}
@@ -268,7 +306,7 @@ export default function App() {
               </div>
               <h4 className="text-base font-bold text-slate-200 mb-1">No channels found</h4>
               <p className="text-xs text-slate-400 max-w-sm mb-4">
-                No TV channels match your current search query or active filter settings.
+                No TV channels match &ldquo;{searchTerm}&rdquo;. Try another name, genre, or language.
               </p>
               <button
                 onClick={() => {
@@ -277,9 +315,9 @@ export default function App() {
                   setSelectedLanguage('All');
                   setActiveTab('all');
                 }}
-                className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition-all"
+                className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition-all shadow-md shadow-sky-500/20"
               >
-                Reset All Filters
+                Reset Search & Show All Channels
               </button>
             </div>
           )}

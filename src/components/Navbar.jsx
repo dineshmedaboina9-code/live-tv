@@ -1,9 +1,11 @@
-import React, { useRef, useEffect } from 'react';
-import { Search, X, Tv, PlusCircle, RefreshCw, Menu } from 'lucide-react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
+import { Search, X, Tv, PlusCircle, RefreshCw, Menu, Play, ArrowRight } from 'lucide-react';
 
 export default function Navbar({
   searchTerm,
   onSearchChange,
+  channels = [],
+  onSelectChannel,
   channelCount,
   onOpenCustomM3U,
   onRefreshChannels,
@@ -11,18 +13,84 @@ export default function Navbar({
   onToggleSidebar
 }) {
   const searchInputRef = useRef(null);
+  const searchContainerRef = useRef(null);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Keyboard shortcut '/' to focus search
+  // Compute live search suggestions for dropdown (max 8 channels)
+  const searchSuggestions = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return [];
+
+    const terms = query.split(/\s+/).filter(Boolean);
+    return channels
+      .filter(ch => {
+        const name = (ch.name || '').toLowerCase();
+        const cat = (ch.category || '').toLowerCase();
+        const lang = (ch.language || '').toLowerCase();
+        return terms.every(term => name.includes(term) || cat.includes(term) || lang.includes(term));
+      })
+      .slice(0, 8);
+  }, [channels, searchTerm]);
+
+  // Open dropdown when search term is typed
+  useEffect(() => {
+    if (searchTerm.trim().length > 0) {
+      setIsDropdownOpen(true);
+      setSelectedIndex(0);
+    } else {
+      setIsDropdownOpen(false);
+    }
+  }, [searchTerm]);
+
+  // Handle outside click to close dropdown
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Keyboard navigation for search dropdown & '/' shortcut
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Focus search on '/'
       if (e.key === '/' && document.activeElement !== searchInputRef.current) {
         e.preventDefault();
         searchInputRef.current?.focus();
+        return;
+      }
+
+      if (!isDropdownOpen || searchSuggestions.length === 0) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex(prev => (prev + 1) % searchSuggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex(prev => (prev - 1 + searchSuggestions.length) % searchSuggestions.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (searchSuggestions[selectedIndex]) {
+          handleSelect(searchSuggestions[selectedIndex]);
+        }
+      } else if (e.key === 'Escape') {
+        setIsDropdownOpen(false);
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [isDropdownOpen, searchSuggestions, selectedIndex]);
+
+  const handleSelect = (channel) => {
+    onSelectChannel?.(channel);
+    setIsDropdownOpen(false);
+    onSearchChange('');
+  };
 
   return (
     <header className="sticky top-0 z-40 w-full glass-panel border-b border-white/5 px-4 lg:px-8 py-3.5 flex items-center justify-between gap-4">
@@ -56,8 +124,8 @@ export default function Navbar({
         </div>
       </div>
 
-      {/* Global Search Bar */}
-      <div className="flex-1 max-w-xl mx-2">
+      {/* Global Search Bar with Live Suggestions Dropdown */}
+      <div ref={searchContainerRef} className="flex-1 max-w-xl mx-2 relative">
         <div className="relative flex items-center">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
           <input
@@ -65,12 +133,18 @@ export default function Navbar({
             type="text"
             placeholder="Search channels, genres, languages (Press '/' to search)..."
             value={searchTerm}
+            onFocus={() => {
+              if (searchTerm.trim().length > 0) setIsDropdownOpen(true);
+            }}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="w-full bg-[#141A25] text-slate-100 placeholder:text-slate-500 text-xs sm:text-sm pl-10 pr-9 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500/50 transition-all"
+            className="w-full bg-[#141A25] text-slate-100 placeholder:text-slate-500 text-xs sm:text-sm pl-10 pr-9 py-2.5 rounded-xl border border-white/10 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500/50 transition-all shadow-inner"
           />
           {searchTerm && (
             <button
-              onClick={() => onSearchChange('')}
+              onClick={() => {
+                onSearchChange('');
+                setIsDropdownOpen(false);
+              }}
               className="absolute right-3 text-slate-400 hover:text-slate-200 transition-colors"
               title="Clear search"
             >
@@ -78,6 +152,69 @@ export default function Navbar({
             </button>
           )}
         </div>
+
+        {/* Live Instant Results Dropdown */}
+        {isDropdownOpen && searchSuggestions.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-2 bg-[#121722] border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50 backdrop-blur-xl animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="p-2 border-b border-white/5 flex items-center justify-between text-[11px] text-slate-400 font-semibold px-3">
+              <span>Matching Live Channels ({searchSuggestions.length})</span>
+              <span>Use ↑ ↓ to navigate, Enter to play</span>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
+              {searchSuggestions.map((channel, idx) => {
+                const isHighlighted = idx === selectedIndex;
+                return (
+                  <div
+                    key={channel.id}
+                    onClick={() => handleSelect(channel)}
+                    onMouseEnter={() => setSelectedIndex(idx)}
+                    className={`flex items-center justify-between p-2.5 px-3 cursor-pointer transition-colors ${
+                      isHighlighted ? 'bg-sky-500/15 text-white' : 'hover:bg-white/5 text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {/* Thumbnail/Logo */}
+                      <div className="w-8 h-8 rounded-lg bg-black/40 border border-white/10 p-1 flex items-center justify-center shrink-0">
+                        {channel.logo ? (
+                          <img
+                            src={channel.logo}
+                            alt=""
+                            className="w-full h-full object-contain"
+                            onError={(e) => { e.target.style.display = 'none'; }}
+                          />
+                        ) : (
+                          <Tv className="w-4 h-4 text-sky-400" />
+                        )}
+                      </div>
+
+                      {/* Title & Details */}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs truncate text-slate-100">
+                            {channel.name}
+                          </span>
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30 uppercase">
+                            LIVE
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {channel.category} • {channel.language}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-sky-400 font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100">
+                        <Play className="w-3 h-3 fill-current" /> Play
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Right Controls & Actions */}
