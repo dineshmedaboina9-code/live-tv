@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { 
   Play, Pause, Volume2, VolumeX, Maximize, Minimize, 
-  RotateCcw, Heart, Tv, Radio, AlertCircle, ShieldAlert,
-  PictureInPicture2, Sparkles, ExternalLink
+  RotateCcw, Heart, Tv, AlertCircle,
+  PictureInPicture2, Sparkles, Volume1
 } from 'lucide-react';
 
 export default function VideoPlayer({ 
@@ -21,6 +21,7 @@ export default function VideoPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
+  const [autoplayMuted, setAutoplayMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -37,26 +38,62 @@ export default function VideoPlayer({
     setHasError(false);
     setErrorMessage('');
     setUsingBackup(false);
+    setAutoplayMuted(false);
 
     const streamUrl = channel.url;
     const video = videoRef.current;
     if (!video) return;
 
-    // Clean up previous instance
+    // Clean up previous HLS instance immediately
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
+
+    const startPlayback = (targetVideo) => {
+      const playPromise = targetVideo.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+            setIsLoading(false);
+          })
+          .catch(() => {
+            // Browser autoplay policy blocked unmuted playback: start muted instantly!
+            targetVideo.muted = true;
+            setIsMuted(true);
+            setAutoplayMuted(true);
+            targetVideo.play().then(() => {
+              setIsPlaying(true);
+              setIsLoading(false);
+            }).catch(() => {
+              setIsPlaying(false);
+              setIsLoading(false);
+            });
+          });
+      }
+    };
 
     const loadStream = (url) => {
       if (Hls.isSupported()) {
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
-          backBufferLength: 60,
-          manifestLoadingTimeOut: 12000,
-          levelLoadingTimeOut: 12000,
-          fragLoadingTimeOut: 15000,
+          backBufferLength: 20,
+          maxBufferLength: 8,            // buffer only 8s initially for instant start!
+          maxMaxBufferLength: 16,
+          maxBufferSize: 30 * 1000 * 1000,
+          liveSyncDurationCount: 1,      // start playback immediately on 1-2 chunks
+          liveMaxLatencyDurationCount: 4,
+          startLevel: -1,
+          startFragPrefetch: true,       // prefetch segments during manifest load
+          progressive: true,
+          manifestLoadingTimeOut: 4500,  // fast failure to try recovery or backup
+          manifestLoadingMaxRetry: 1,
+          levelLoadingTimeOut: 4500,
+          levelLoadingMaxRetry: 1,
+          fragLoadingTimeOut: 6000,
+          fragLoadingMaxRetry: 2,
         });
 
         hlsRef.current = hls;
@@ -64,19 +101,17 @@ export default function VideoPlayer({
         hls.attachMedia(video);
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          startPlayback(video);
+        });
+
+        hls.on(Hls.Events.FRAG_BUFFERED, () => {
           setIsLoading(false);
-          video.play().then(() => setIsPlaying(true)).catch(() => {
-            // Browser autoplay policy might require user click or mute
-            setIsPlaying(false);
-          });
         });
 
         hls.on(Hls.Events.ERROR, (event, data) => {
           if (data.fatal) {
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                console.warn('HLS Network error encountered, attempting recovery...');
-                // Try backup stream if available
                 if (channel.backupUrl && !usingBackup) {
                   setUsingBackup(true);
                   loadStream(channel.backupUrl);
@@ -85,14 +120,13 @@ export default function VideoPlayer({
                 }
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
-                console.warn('HLS Media error encountered, recovering...');
                 hls.recoverMediaError();
                 break;
               default:
                 hls.destroy();
                 setIsLoading(false);
                 setHasError(true);
-                setErrorMessage('Stream broadcast currently unreachable or geo-restricted.');
+                setErrorMessage('Stream broadcast currently unreachable. Tap retry or select another channel.');
                 break;
             }
           }
@@ -100,20 +134,7 @@ export default function VideoPlayer({
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         // Native Safari HLS
         video.src = url;
-        video.addEventListener('loadedmetadata', () => {
-          setIsLoading(false);
-          video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-        });
-        video.addEventListener('error', () => {
-          if (channel.backupUrl && !usingBackup) {
-            setUsingBackup(true);
-            loadStream(channel.backupUrl);
-          } else {
-            setIsLoading(false);
-            setHasError(true);
-            setErrorMessage('Native stream playback failed.');
-          }
-        });
+        startPlayback(video);
       } else {
         setIsLoading(false);
         setHasError(true);
@@ -121,9 +142,25 @@ export default function VideoPlayer({
       }
     };
 
+    // Hook video events for immediate loading spinner dismissal
+    const handlePlaying = () => {
+      setIsLoading(false);
+      setIsPlaying(true);
+    };
+    const handleWaiting = () => setIsLoading(true);
+    const handleCanPlay = () => setIsLoading(false);
+
+    video.addEventListener('playing', handlePlaying);
+    video.addEventListener('waiting', handleWaiting);
+    video.addEventListener('canplay', handleCanPlay);
+
     loadStream(streamUrl);
 
     return () => {
+      video.removeEventListener('playing', handlePlaying);
+      video.removeEventListener('waiting', handleWaiting);
+      video.removeEventListener('canplay', handleCanPlay);
+
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -159,6 +196,7 @@ export default function VideoPlayer({
       videoRef.current.volume = newVol;
       videoRef.current.muted = newVol === 0;
       setIsMuted(newVol === 0);
+      setAutoplayMuted(false);
     }
   };
 
@@ -167,6 +205,7 @@ export default function VideoPlayer({
     const nextMuted = !isMuted;
     videoRef.current.muted = nextMuted;
     setIsMuted(nextMuted);
+    setAutoplayMuted(false);
     if (!nextMuted && volume === 0) {
       setVolume(0.5);
       videoRef.current.volume = 0.5;
@@ -209,13 +248,21 @@ export default function VideoPlayer({
     if (video) {
       video.load();
       if (Hls.isSupported()) {
-        const hls = new Hls();
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          maxBufferLength: 8,
+          liveSyncDurationCount: 1,
+          startFragPrefetch: true
+        });
         hlsRef.current = hls;
         hls.loadSource(usingBackup && channel.backupUrl ? channel.backupUrl : channel.url);
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          setIsLoading(false);
-          video.play().then(() => setIsPlaying(true));
+          video.play().then(() => {
+            setIsPlaying(true);
+            setIsLoading(false);
+          });
         });
       }
     }
@@ -237,7 +284,7 @@ export default function VideoPlayer({
         </div>
         <h3 className="text-xl font-bold text-slate-200 mb-1">Select a Channel to Stream</h3>
         <p className="text-sm text-slate-400 max-w-md">
-          Choose from over 30+ top live Indian news, entertainment, music, movie and sports channels below.
+          Choose from over 30+ verified fast Indian channels below.
         </p>
       </div>
     );
@@ -260,15 +307,26 @@ export default function VideoPlayer({
         playsInline
       />
 
-      {/* Loading Spinner */}
-      {isLoading && (
-        <div className="absolute inset-0 bg-dark-base/80 backdrop-blur-sm flex flex-col items-center justify-center text-sky-400 pointer-events-none z-20">
-          <div className="relative w-14 h-14">
+      {/* Fast Loading Spinner Overlay */}
+      {isLoading && !hasError && (
+        <div className="absolute inset-0 bg-dark-base/70 backdrop-blur-[2px] flex flex-col items-center justify-center text-sky-400 pointer-events-none z-20 transition-opacity">
+          <div className="relative w-12 h-12">
             <div className="absolute inset-0 rounded-full border-2 border-sky-500/20 animate-ping" />
-            <div className="w-14 h-14 rounded-full border-3 border-transparent border-t-sky-400 border-r-sky-400 animate-spin" />
+            <div className="w-12 h-12 rounded-full border-3 border-transparent border-t-sky-400 border-r-sky-400 animate-spin" />
           </div>
-          <p className="mt-4 text-xs font-semibold tracking-wider text-slate-300 uppercase">Connecting to Live Feed...</p>
+          <p className="mt-3 text-xs font-semibold tracking-wider text-slate-300 uppercase">Connecting Fast Feed...</p>
         </div>
+      )}
+
+      {/* Autoplay Muted Tap-to-Unmute Banner */}
+      {autoplayMuted && isPlaying && (
+        <button
+          onClick={toggleMute}
+          className="absolute top-16 left-4 z-20 px-3 py-1.5 rounded-xl bg-black/75 hover:bg-black/90 backdrop-blur-md border border-sky-400/30 text-sky-300 text-xs font-semibold flex items-center gap-2 shadow-lg animate-in fade-in transition-all"
+        >
+          <VolumeX className="w-4 h-4 text-rose-400 animate-pulse" />
+          <span>Tap to Unmute Audio</span>
+        </button>
       )}
 
       {/* Error Overlay */}
@@ -279,7 +337,7 @@ export default function VideoPlayer({
           </div>
           <h4 className="text-lg font-bold text-slate-100 mb-1">Stream Currently Offline</h4>
           <p className="text-xs text-slate-400 max-w-sm mb-4">
-            {errorMessage || 'This live transmission source is temporarily unreachable or blocked by CORS headers.'}
+            {errorMessage || 'This transmission source is temporarily unreachable.'}
           </p>
           <div className="flex gap-2.5">
             <button
@@ -308,7 +366,6 @@ export default function VideoPlayer({
         showControls || !isPlaying ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}>
         <div className="flex items-center gap-3">
-          {/* Channel Logo */}
           <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md p-1 border border-white/20 flex items-center justify-center overflow-hidden shadow-lg">
             {channel.logo ? (
               <img 
@@ -336,7 +393,7 @@ export default function VideoPlayer({
               <span>{channel.category}</span>
               <span>•</span>
               <span>{channel.language}</span>
-              {usingBackup && <span className="text-amber-400 font-medium">• Backup CDN</span>}
+              {usingBackup && <span className="text-amber-400 font-medium">• Backup Mirror</span>}
             </p>
           </div>
         </div>
